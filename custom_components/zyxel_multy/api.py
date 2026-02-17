@@ -36,7 +36,33 @@ class ZapiAuthError(ZapiError):
 
 
 class ZyxelMultyApi:
-    """Client for the Zyxel Multy ZAPI."""
+    """Client for the Zyxel Multy ZAPI.
+
+    Protocol details (reverse-engineered from the official Android app):
+
+    REQUEST envelope:
+      {"rpc": {"xmlns": "urn:ietf:params:xml:ns:netconf:base:1.0",
+               "message-id": <timestamp>, "operation": "<op>", "params": {...}}}
+
+    For "rpc" operations, params contains:
+      {"xmlns": "<ns>", "root": "<root>", "<root>": {<model data>}}
+      Note: data goes directly under the root key in params, NOT in a config array.
+
+    For "get-config" operations, params contains:
+      {"source": "running", "filter": [{"xmlns": "<ns>", "root": "<root>", "type": "subtree"}]}
+
+    For "edit-config" operations, params contains:
+      {"target": "running", "error-option": "stop-on-error",
+       "config": [{"xmlns": "<ns>", "root": "<root>", "<root>": {<model data>}}]}
+
+    RESPONSE envelope:
+      {"rpc-reply": {"xmlns": "...", "message-id": <n>, "result": "ok",
+                     "data": [{"xmlns": "<ns>", "root": "<root>", "<root>": {<response data>}}]}}
+
+    Auth token is returned in:
+      rpc-reply.data[0].authentication.output.token
+    and must be sent back as a Cookie: token=<value>
+    """
 
     def __init__(
         self,
@@ -75,11 +101,19 @@ class ZyxelMultyApi:
         operation: str,
         namespace: str,
         root: str,
-        config: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
         source: str = "running",
         edit_operation: str | None = None,
     ) -> dict[str, Any]:
-        """Build an RPC request envelope."""
+        """Build an RPC request envelope.
+
+        For "rpc" operations, the model data is placed directly under the root key
+        in params (e.g., params.authentication = {input: {...}, ...}).
+
+        For "get-config", filter elements specify what to retrieve.
+
+        For "edit-config", config array contains the data to write.
+        """
         params: dict[str, Any] = {}
 
         if operation == "get-config":
@@ -93,27 +127,21 @@ class ZyxelMultyApi:
             ]
         elif operation == "edit-config":
             params["target"] = "running"
-            params["xmlns"] = namespace
-            params["root"] = root
-            if config:
-                params["config"] = [
-                    {
-                        "xmlns": namespace,
-                        "root": root,
-                        **config,
-                    }
-                ]
+            params["error-option"] = "stop-on-error"
+            config_element: dict[str, Any] = {
+                "xmlns": namespace,
+                "root": root,
+            }
+            if data:
+                config_element[root] = data
+            params["config"] = [config_element]
         else:  # rpc
             params["xmlns"] = namespace
             params["root"] = root
-            if config:
-                params["config"] = [
-                    {
-                        "xmlns": namespace,
-                        "root": root,
-                        **config,
-                    }
-                ]
+            if data:
+                params[root] = data
+            else:
+                params[root] = {}
 
         rpc: dict[str, Any] = {
             "rpc": {
@@ -138,6 +166,8 @@ class ZyxelMultyApi:
         if self._token:
             cookies["token"] = self._token
 
+        _LOGGER.debug("ZAPI request: %s", payload)
+
         try:
             async with session.post(
                 self._base_url,
@@ -146,23 +176,49 @@ class ZyxelMultyApi:
                 cookies=cookies,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
+                response_data = await resp.json(content_type=None)
+                _LOGGER.debug("ZAPI response status=%s: %s", resp.status, response_data)
+
                 if resp.status == 401:
                     self._token = None
                     raise ZapiAuthError("Authentication failed or token expired")
                 if resp.status != 200:
-                    text = await resp.text()
-                    raise ZapiError(f"HTTP {resp.status}: {text}")
-                return await resp.json()
+                    raise ZapiError(f"HTTP {resp.status}: {response_data}")
+
+                # Check rpc-reply result for errors
+                reply = response_data.get("rpc-reply", {})
+                result = reply.get("result", "")
+                if result and result != "ok":
+                    rpc_error = reply.get("rpc-error", {})
+                    error_msg = rpc_error.get("error-message", result)
+                    error_tag = rpc_error.get("error-tag", "")
+                    if "auth" in error_tag.lower() or "access" in error_tag.lower():
+                        self._token = None
+                        raise ZapiAuthError(f"ZAPI auth error: {error_msg}")
+                    raise ZapiError(f"ZAPI error: {error_msg} (tag={error_tag})")
+
+                return response_data
         except aiohttp.ClientError as err:
             raise ZapiError(f"Connection error: {err}") from err
 
     async def authenticate(self) -> str:
-        """Authenticate and get a session token."""
+        """Authenticate and get a session token.
+
+        Request format:
+          rpc.params.xmlns = NS_AUTH
+          rpc.params.root = "authentication"
+          rpc.params.authentication = {
+            "input": {"name": "<user>", "password": "<pass>"}
+          }
+
+        Response format:
+          rpc-reply.data[0].authentication.output.token
+        """
         payload = self._build_rpc(
             operation="rpc",
             namespace=NS_AUTH,
             root="authentication",
-            config={
+            data={
                 "user-authentication-order": ["local"],
                 "user": [
                     {
@@ -174,16 +230,29 @@ class ZyxelMultyApi:
         )
 
         result = await self._request(payload)
-        try:
-            token = result["rpc"]["params"]["config"][0]["output"]["token"]
-        except (KeyError, IndexError, TypeError):
-            # Try alternative response paths
+
+        # Extract token from rpc-reply.data[0].authentication.output.token
+        token = None
+        for extract_fn in [
+            lambda r: r["rpc-reply"]["data"][0]["authentication"]["output"]["token"],
+            lambda r: r["rpc-reply"]["data"][0]["output"]["token"],
+            # Fallback: maybe root key name differs
+            lambda r: next(
+                v["output"]["token"]
+                for v in r["rpc-reply"]["data"][0].values()
+                if isinstance(v, dict) and "output" in v
+            ),
+        ]:
             try:
-                token = result["output"]["token"]
-            except (KeyError, TypeError) as err:
-                raise ZapiAuthError(
-                    f"Could not extract token from response: {result}"
-                ) from err
+                token = extract_fn(result)
+                break
+            except (KeyError, IndexError, TypeError, StopIteration):
+                continue
+
+        if not token:
+            raise ZapiAuthError(
+                f"Could not extract token from response: {result}"
+            )
 
         self._token = token
         _LOGGER.debug("Successfully authenticated with Zyxel Multy router")
@@ -203,14 +272,34 @@ class ZyxelMultyApi:
             await self.authenticate()
             return await self._request(payload)
 
-    def _extract_config(self, result: dict[str, Any]) -> Any:
-        """Extract config data from response."""
+    def _extract_data(self, result: dict[str, Any], root: str | None = None) -> Any:
+        """Extract data from an rpc-reply response.
+
+        Response structure:
+          {"rpc-reply": {"data": [{"xmlns": "...", "root": "<root>", "<root>": {...}}]}}
+
+        If root is provided, returns the data under that key.
+        Otherwise returns the first data element dict.
+        """
         try:
-            return result["rpc"]["params"]["config"][0]
+            data_array = result["rpc-reply"]["data"]
+            if not data_array:
+                return {}
+            element = data_array[0]
+            if root and root in element:
+                return element[root]
+            # Try to find the data key (skip metadata keys)
+            metadata_keys = {"xmlns", "type", "timestamp", "root", "not-modified"}
+            for key, value in element.items():
+                if key not in metadata_keys and isinstance(value, dict):
+                    return value
+            return element
         except (KeyError, IndexError, TypeError):
+            # Fallback: try old format just in case
             try:
-                return result["rpc"]["params"]
-            except (KeyError, TypeError):
+                return result["rpc-reply"]["data"][0]
+            except (KeyError, IndexError, TypeError):
+                _LOGGER.debug("Could not extract data from response: %s", result)
                 return result
 
     # ===== System =====
@@ -219,25 +308,25 @@ class ZyxelMultyApi:
         """Get basic system information."""
         payload = self._build_rpc("rpc", NS_SYSTEM, "basic-system-info")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "basic-system-info")
 
     async def get_system_state(self) -> dict[str, Any]:
         """Get system state (clock, platform, usage)."""
         payload = self._build_rpc("rpc", NS_SYSTEM, "system-state")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "system-state")
 
     async def get_api_version(self) -> dict[str, Any]:
         """Get API version."""
         payload = self._build_rpc("rpc", NS_SYSTEM, "api-version")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "api-version")
 
     async def get_current_bandwidth(self) -> dict[str, Any]:
         """Get current bandwidth usage."""
         payload = self._build_rpc("rpc", NS_SYSTEM, "current-band-width")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "current-band-width")
 
     async def system_restart(self) -> dict[str, Any]:
         """Reboot the router."""
@@ -255,7 +344,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_SYSTEM,
             "system-wake-on-lan",
-            config={"input": {"mac-address": mac_address}},
+            data={"input": {"mac-address": mac_address}},
         )
         return await self._authenticated_request(payload)
 
@@ -267,10 +356,10 @@ class ZyxelMultyApi:
             "rpc",
             NS_EASY123,
             "get-wifi-configuration",
-            config={"input": {"network": network}},
+            data={"input": {"network": network}},
         )
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "get-wifi-configuration")
 
     async def set_wifi(
         self,
@@ -289,7 +378,7 @@ class ZyxelMultyApi:
             input_data["psk"] = {"key": password}
 
         payload = self._build_rpc(
-            "rpc", NS_EASY123, "set-wifi", config={"input": input_data}
+            "rpc", NS_EASY123, "set-wifi", data={"input": input_data}
         )
         return await self._authenticated_request(payload)
 
@@ -297,13 +386,13 @@ class ZyxelMultyApi:
         """Check if WAN port is connected."""
         payload = self._build_rpc("rpc", NS_EASY123, "is-wan-port-connected")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "is-wan-port-connected")
 
     async def get_internet_status(self) -> dict[str, Any]:
         """Get internet access status."""
         payload = self._build_rpc("rpc", NS_EASY123, "access-internet-status")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "access-internet-status")
 
     # ===== Speed Test =====
 
@@ -318,7 +407,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_SPEED_TEST,
             "speed-test",
-            config={
+            data={
                 "input": {
                     "originator": 1,
                     "device-mac": device_mac,
@@ -333,7 +422,7 @@ class ZyxelMultyApi:
         """Get speed test result."""
         payload = self._build_rpc("rpc", NS_SPEED_TEST, "test-result")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "test-result")
 
     async def get_speed_test_history(
         self, device_mac: str = "", count: int = 10
@@ -343,10 +432,10 @@ class ZyxelMultyApi:
             "rpc",
             NS_SPEED_TEST,
             "get-history",
-            config={"input": {"device-mac": device_mac, "number": count}},
+            data={"input": {"device-mac": device_mac, "number": count}},
         )
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "get-history")
 
     # ===== Network Devices =====
 
@@ -354,16 +443,16 @@ class ZyxelMultyApi:
         """Get all connected devices."""
         payload = self._build_rpc("get-config", NS_NETWORK_DEVICE, "network-devices")
         result = await self._authenticated_request(payload)
-        config = self._extract_config(result)
-        if isinstance(config, dict):
-            return config.get("device", [])
+        data = self._extract_data(result, "network-devices")
+        if isinstance(data, dict):
+            return data.get("device", [])
         return []
 
     async def get_device_statistics(self) -> dict[str, Any]:
         """Get device statistics (total clients, online, etc.)."""
         payload = self._build_rpc("rpc", NS_NETWORK_DEVICE, "get-device-statistics")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "get-device-statistics")
 
     async def set_device_name(self, device_id: str, name: str) -> dict[str, Any]:
         """Set device friendly name."""
@@ -371,7 +460,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_NETWORK_DEVICE,
             "set-device-name",
-            config={"input": {"id": device_id, "name": name}},
+            data={"input": {"id": device_id, "name": name}},
         )
         return await self._authenticated_request(payload)
 
@@ -385,7 +474,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_FIREWALL_V4,
             "block",
-            config={
+            data={
                 "input": {
                     "mac-address": mac_address,
                     "lasting-time": lasting_time,
@@ -400,7 +489,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_FIREWALL_V4,
             "unblock",
-            config={"input": {"index": index}},
+            data={"input": {"index": index}},
         )
         return await self._authenticated_request(payload)
 
@@ -414,7 +503,7 @@ class ZyxelMultyApi:
             "nat",
         )
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "nat")
 
     async def add_port_forward(
         self,
@@ -433,7 +522,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_NAT_GENERAL,
             "add-rule",
-            config={
+            data={
                 "input": {
                     "service": service,
                     "service-index": 0,
@@ -453,7 +542,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_NAT_GENERAL,
             "remove-rule",
-            config={"input": {"index": index}},
+            data={"input": {"index": index}},
         )
         return await self._authenticated_request(payload)
 
@@ -463,7 +552,7 @@ class ZyxelMultyApi:
         """Get parental control configuration."""
         payload = self._build_rpc("get-config", NS_PARENTAL, "top")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "top")
 
     async def parental_block(self, profile_index: str) -> dict[str, Any]:
         """Block a parental control profile (pause internet)."""
@@ -471,7 +560,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_PARENTAL,
             "block",
-            config={"input": {"index": profile_index}},
+            data={"input": {"index": profile_index}},
         )
         return await self._authenticated_request(payload)
 
@@ -481,7 +570,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_PARENTAL,
             "unblock",
-            config={"input": {"index": profile_index}},
+            data={"input": {"index": profile_index}},
         )
         return await self._authenticated_request(payload)
 
@@ -493,7 +582,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_PARENTAL,
             "bonus",
-            config={"input": {"index": profile_index, "minute": minutes}},
+            data={"input": {"index": profile_index, "minute": minutes}},
         )
         return await self._authenticated_request(payload)
 
@@ -503,7 +592,7 @@ class ZyxelMultyApi:
         """Get state of all mesh devices."""
         payload = self._build_rpc("rpc", NS_WIFI_SYSTEM, "system-devices-state")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "system-devices-state")
 
     async def restart_mesh_node(self, mac: str) -> dict[str, Any]:
         """Restart a specific mesh node."""
@@ -511,7 +600,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_WIFI_SYSTEM,
             "restart",
-            config={"input": {"mac": mac}},
+            data={"input": {"mac": mac}},
         )
         return await self._authenticated_request(payload)
 
@@ -523,7 +612,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_WIFI_SYSTEM,
             "switch-led",
-            config={
+            data={
                 "input": {
                     "mac": mac,
                     "led-switch": state,
@@ -539,7 +628,7 @@ class ZyxelMultyApi:
             "rpc",
             NS_WIFI_SYSTEM,
             "naming",
-            config={"input": {"mac": mac, "name": name}},
+            data={"input": {"mac": mac, "name": name}},
         )
         return await self._authenticated_request(payload)
 
@@ -549,7 +638,7 @@ class ZyxelMultyApi:
         """Check for firmware updates."""
         payload = self._build_rpc("rpc", NS_FIRMWARE, "on-line-check")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "on-line-check")
 
     async def firmware_download(self) -> dict[str, Any]:
         """Start firmware download."""
@@ -560,7 +649,7 @@ class ZyxelMultyApi:
         """Get firmware download status."""
         payload = self._build_rpc("rpc", NS_FIRMWARE, "on-line-download-status")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "on-line-download-status")
 
     async def firmware_upgrade(self) -> dict[str, Any]:
         """Start firmware upgrade."""
@@ -571,7 +660,7 @@ class ZyxelMultyApi:
         """Get firmware upgrade status."""
         payload = self._build_rpc("rpc", NS_FIRMWARE, "upgrade-status")
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "upgrade-status")
 
     # ===== WAN =====
 
@@ -583,4 +672,4 @@ class ZyxelMultyApi:
             "wan",
         )
         result = await self._authenticated_request(payload)
-        return self._extract_config(result)
+        return self._extract_data(result, "wan")
