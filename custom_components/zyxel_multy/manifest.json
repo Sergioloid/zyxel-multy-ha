@@ -4,9 +4,9 @@
   "codeowners": [],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/sergioyurisorgente/ZyxelMulty",
+  "documentation": "https://github.com/Sergioloid/zyxel-multy-ha",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/sergioyurisorgente/ZyxelMulty/issues",
+  "issue_tracker": "https://github.com/Sergioloid/zyxel-multy-ha/issues",
   "requirements": [],
   "version": "1.0.0"
 }
