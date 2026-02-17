@@ -1,5 +1,7 @@
 # Zyxel Multy - Home Assistant Integration
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Sergioloid&repository=zyxel-multy-ha&category=integration)
+
 Custom Home Assistant integration for **Zyxel Multy** mesh routers (Multy X, Multy Plus, Multy U, Multy Mini, Multy M1, Multy Max).
 
 Reverse-engineered from the official Zyxel Multy Android app (ZAPI protocol).
