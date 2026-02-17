@@ -1,0 +1,292 @@
+reboot:
+  name: Reboot Router
+  description: Reboot the Zyxel Multy router or a specific mesh node.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      description: Optional config entry ID (uses first if omitted).
+      required: false
+      selector:
+        text:
+    mac:
+      name: MAC Address
+      description: MAC address of a specific mesh node to reboot. If omitted, reboots the main router.
+      required: false
+      selector:
+        text:
+
+speed_test:
+  name: Speed Test
+  description: Start a speed test on the router.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+
+block_device:
+  name: Block Device
+  description: Block internet access for a device by MAC address.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    mac_address:
+      name: MAC Address
+      description: MAC address of the device to block.
+      required: true
+      selector:
+        text:
+    duration:
+      name: Duration
+      description: Block duration in seconds (0 = permanent).
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: seconds
+
+unblock_device:
+  name: Unblock Device
+  description: Unblock a previously blocked device.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    index:
+      name: Rule Index
+      description: The index of the block rule to remove.
+      required: true
+      selector:
+        text:
+
+set_wifi:
+  name: Set WiFi
+  description: Change WiFi SSID and/or password.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    ssid:
+      name: SSID (2.4GHz)
+      description: New SSID for the 2.4GHz band.
+      required: false
+      selector:
+        text:
+    ssid_5g:
+      name: SSID (5GHz)
+      description: New SSID for the 5GHz band.
+      required: false
+      selector:
+        text:
+    password:
+      name: Password
+      description: New WiFi password.
+      required: false
+      selector:
+        text:
+    network:
+      name: Network
+      description: Target network (main or guest).
+      required: false
+      default: main
+      selector:
+        select:
+          options:
+            - main
+            - guest
+
+switch_led:
+  name: Switch LED
+  description: Turn on/off the LED on a mesh node.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    mac:
+      name: MAC Address
+      description: MAC address of the mesh node.
+      required: true
+      selector:
+        text:
+    state:
+      name: State
+      description: LED state.
+      required: true
+      selector:
+        select:
+          options:
+            - "On"
+            - "Off"
+    brightness:
+      name: Brightness
+      description: LED brightness level (0-100).
+      required: false
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 100
+
+add_port_forward:
+  name: Add Port Forward
+  description: Add a port forwarding rule.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    service:
+      name: Service Name
+      description: Name/description for this rule.
+      required: true
+      selector:
+        text:
+    protocol:
+      name: Protocol
+      required: false
+      default: TCP
+      selector:
+        select:
+          options:
+            - TCP
+            - UDP
+            - TCP/UDP
+    external_port:
+      name: External Port
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 65535
+    external_port_end:
+      name: External Port End
+      description: End of port range (same as external_port for single port).
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 65535
+    internal_port:
+      name: Internal Port
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 65535
+    local_ip:
+      name: Local IP Address
+      description: Internal IP to forward to.
+      required: true
+      selector:
+        text:
+
+remove_port_forward:
+  name: Remove Port Forward
+  description: Remove a port forwarding rule.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    index:
+      name: Rule Index
+      description: Index of the rule to remove.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 999
+
+parental_block:
+  name: Parental Control - Block Profile
+  description: Pause internet for a parental control profile.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    profile_index:
+      name: Profile Index
+      required: true
+      selector:
+        text:
+
+parental_unblock:
+  name: Parental Control - Unblock Profile
+  description: Resume internet for a parental control profile.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    profile_index:
+      name: Profile Index
+      required: true
+      selector:
+        text:
+
+parental_bonus:
+  name: Parental Control - Bonus Time
+  description: Give extra internet time to a parental control profile.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    profile_index:
+      name: Profile Index
+      required: true
+      selector:
+        text:
+    minutes:
+      name: Minutes
+      description: Extra minutes to grant.
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 480
+          unit_of_measurement: minutes
+
+wake_on_lan:
+  name: Wake on LAN
+  description: Send a Wake-on-LAN magic packet via the router.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:
+    mac_address:
+      name: MAC Address
+      description: MAC address of the device to wake.
+      required: true
+      selector:
+        text:
+
+firmware_check:
+  name: Check Firmware
+  description: Check for available firmware updates.
+  fields:
+    entry_id:
+      name: Config Entry ID
+      required: false
+      selector:
+        text:

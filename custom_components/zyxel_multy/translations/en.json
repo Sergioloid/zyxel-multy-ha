@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Zyxel Multy Router",
+        "description": "Enter the connection details for your Zyxel Multy router.",
+        "data": {
+          "host": "Router IP Address",
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the router. Check the IP address.",
+      "invalid_auth": "Invalid username or password.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This router is already configured."
+    }
+  }
+}
