@@ -8,7 +8,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfDataRate, UnitOfInformation
+from homeassistant.const import PERCENTAGE, UnitOfDataRate, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -40,6 +40,9 @@ async def async_setup_entry(
         ZyxelFirmwareVersionSensor(coordinator),
         ZyxelFirmwareAvailableSensor(coordinator),
         ZyxelMeshNodeCountSensor(coordinator),
+        ZyxelCpuUsageSensor(coordinator),
+        ZyxelMemoryUsageSensor(coordinator),
+        ZyxelUptimeSensor(coordinator),
     ]
 
     async_add_entities(entities)
@@ -281,9 +284,11 @@ class ZyxelFirmwareVersionSensor(ZyxelMultyEntity, SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        mesh = self.coordinator.data.get("mesh_state", {})
-        if isinstance(mesh, dict):
-            return mesh.get("firmware-version")
+        state = self.coordinator.data.get("system_state", {})
+        if isinstance(state, dict):
+            platform = state.get("platform", {})
+            if isinstance(platform, dict):
+                return platform.get("software-version")
         return None
 
 
@@ -323,4 +328,68 @@ class ZyxelMeshNodeCountSensor(ZyxelMultyEntity, SensorEntity):
             devices = mesh.get("device", [])
             if isinstance(devices, list):
                 return len(devices)
+        return None
+
+
+class ZyxelCpuUsageSensor(ZyxelMultyEntity, SensorEntity):
+    """CPU usage percentage."""
+
+    _attr_name = "CPU Usage"
+    _attr_icon = "mdi:cpu-64-bit"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: ZyxelMultyCoordinator) -> None:
+        super().__init__(coordinator, "cpu_usage")
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.coordinator.data.get("system_state", {})
+        if isinstance(state, dict):
+            usage = state.get("usage", {})
+            if isinstance(usage, dict):
+                return usage.get("cpu")
+        return None
+
+
+class ZyxelMemoryUsageSensor(ZyxelMultyEntity, SensorEntity):
+    """Memory usage percentage."""
+
+    _attr_name = "Memory Usage"
+    _attr_icon = "mdi:memory"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: ZyxelMultyCoordinator) -> None:
+        super().__init__(coordinator, "memory_usage")
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.coordinator.data.get("system_state", {})
+        if isinstance(state, dict):
+            usage = state.get("usage", {})
+            if isinstance(usage, dict):
+                return usage.get("memory")
+        return None
+
+
+class ZyxelUptimeSensor(ZyxelMultyEntity, SensorEntity):
+    """Router uptime in seconds."""
+
+    _attr_name = "Uptime"
+    _attr_icon = "mdi:clock-outline"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator: ZyxelMultyCoordinator) -> None:
+        super().__init__(coordinator, "uptime")
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.coordinator.data.get("system_state", {})
+        if isinstance(state, dict):
+            clock = state.get("clock", {})
+            if isinstance(clock, dict):
+                return clock.get("uptime")
         return None

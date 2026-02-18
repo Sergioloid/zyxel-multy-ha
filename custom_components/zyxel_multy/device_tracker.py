@@ -134,6 +134,13 @@ class ZyxelDeviceTracker(CoordinatorEntity[ZyxelMultyCoordinator], ScannerEntity
             if val is not None:
                 attrs[key.replace("-", "_")] = val
 
+        wifi = device.get("wifi-status")
+        if isinstance(wifi, dict):
+            if "radio" in wifi:
+                attrs["wifi_radio"] = wifi["radio"]
+            if "rssi" in wifi:
+                attrs["wifi_rssi"] = wifi["rssi"]
+
         return attrs if attrs else None
 
     def _find_device(self) -> dict | None:

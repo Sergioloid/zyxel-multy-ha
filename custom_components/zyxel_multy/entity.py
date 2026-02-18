@@ -29,16 +29,27 @@ class ZyxelMultyEntity(CoordinatorEntity[ZyxelMultyCoordinator]):
     def device_info(self) -> DeviceInfo:
         """Return device info."""
         system_info = self.coordinator.data.get("system_info", {})
+        system_state = self.coordinator.data.get("system_state", {})
         model = "Zyxel Multy"
         if isinstance(system_info, dict):
             model = system_info.get("model-name", "Zyxel Multy")
 
-        return DeviceInfo(
+        info = DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.data.get("host", "unknown"))},
             name=f"Zyxel {model}",
             manufacturer="Zyxel",
             model=model,
         )
+
+        if isinstance(system_state, dict):
+            platform = system_state.get("platform", {})
+            if isinstance(platform, dict):
+                if "software-version" in platform:
+                    info["sw_version"] = platform["software-version"]
+                if "serial-number" in platform:
+                    info["serial_number"] = platform["serial-number"]
+
+        return info
 
 
 class ZyxelMultyMeshNodeEntity(CoordinatorEntity[ZyxelMultyCoordinator]):
@@ -63,9 +74,22 @@ class ZyxelMultyMeshNodeEntity(CoordinatorEntity[ZyxelMultyCoordinator]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for this mesh node."""
-        return DeviceInfo(
+        info = DeviceInfo(
             identifiers={(DOMAIN, self._node_mac)},
             name=f"Zyxel Multy Node ({self._node_name})",
             manufacturer="Zyxel",
             via_device=(DOMAIN, self.coordinator.data.get("host", "unknown")),
         )
+
+        # Add model and firmware from mesh state
+        mesh_state = self.coordinator.data.get("mesh_state", {})
+        if isinstance(mesh_state, dict):
+            for dev in mesh_state.get("device", []):
+                if isinstance(dev, dict) and dev.get("mac") == self._node_mac:
+                    if "model-name" in dev:
+                        info["model"] = dev["model-name"]
+                    if "firmware-version" in dev:
+                        info["sw_version"] = dev["firmware-version"]
+                    break
+
+        return info

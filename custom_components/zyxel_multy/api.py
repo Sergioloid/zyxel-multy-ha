@@ -17,7 +17,8 @@ RPC calls:
   params: {"xmlns": "<ns>", "root": "<root>", "<root>": {<data>}}
 
 get-config calls:
-  params: {"source": "running", "filter": [{"xmlns": "<ns>", "root": "<root>", "type": "subtree"}]}
+  params: {"source": "running", "filter": [{"xmlns": "<ns>", "root": "<root>", "type": "subtree", "<root>": {}}]}
+  NOTE: The root key as empty dict in filter is REQUIRED or the router returns 5156.
 
 Response:
   {"rpc-reply": {"result": "ok", "data": [{"<root>": {<response>}, "xmlns": "...", "root": "..."}]}}
@@ -108,7 +109,7 @@ class ZyxelMultyApi:
         if operation == "get-config":
             params["source"] = "running"
             params["filter"] = [
-                {"xmlns": namespace, "root": root, "type": "subtree"}
+                {"xmlns": namespace, "root": root, "type": "subtree", root: {}}
             ]
         elif operation == "edit-config":
             params["target"] = "running"
@@ -281,10 +282,16 @@ class ZyxelMultyApi:
     # ===== System =====
 
     async def get_system_info(self) -> dict[str, Any]:
-        """Get basic system info (may require elevated permissions)."""
-        payload = self._build_rpc("rpc", NS_SYSTEM, "basic-system-info")
+        """Get basic system info via get-config."""
+        payload = self._build_rpc("get-config", NS_SYSTEM, "basic-system-info")
         result = await self._authenticated_request(payload)
         return self._extract_data(result, "basic-system-info")
+
+    async def get_system_state(self) -> dict[str, Any]:
+        """Get system state (uptime, firmware, CPU/memory usage)."""
+        payload = self._build_rpc("get-config", NS_SYSTEM, "system-state")
+        result = await self._authenticated_request(payload)
+        return self._extract_data(result, "system-state")
 
     async def get_api_version(self) -> dict[str, Any]:
         payload = self._build_rpc("rpc", NS_SYSTEM, "api-version")
@@ -460,8 +467,8 @@ class ZyxelMultyApi:
     # ===== Mesh / WiFi System =====
 
     async def get_mesh_devices_state(self) -> dict[str, Any]:
-        """Get mesh devices state (may require elevated permissions)."""
-        payload = self._build_rpc("rpc", NS_WIFI_SYSTEM, "system-devices-state")
+        """Get mesh devices state via get-config."""
+        payload = self._build_rpc("get-config", NS_WIFI_SYSTEM, "system-devices-state")
         result = await self._authenticated_request(payload)
         return self._extract_data(result, "system-devices-state")
 

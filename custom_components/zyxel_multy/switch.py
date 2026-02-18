@@ -57,11 +57,18 @@ class ZyxelMeshNodeLedSwitch(ZyxelMultyMeshNodeEntity, SwitchEntity):
         node_name: str,
     ) -> None:
         super().__init__(coordinator, node_mac, node_name, "led")
-        self._is_on: bool | None = True
 
     @property
     def is_on(self) -> bool | None:
-        return self._is_on
+        """Read LED state from coordinator data."""
+        mesh_state = self.coordinator.data.get("mesh_state", {})
+        if isinstance(mesh_state, dict):
+            for dev in mesh_state.get("device", []):
+                if isinstance(dev, dict) and dev.get("mac") == self._node_mac:
+                    led = dev.get("led", {})
+                    if isinstance(led, dict):
+                        return led.get("switch", "").lower() == "on"
+        return None
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the LED."""

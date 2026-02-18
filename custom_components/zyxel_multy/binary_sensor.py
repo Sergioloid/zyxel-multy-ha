@@ -48,8 +48,7 @@ class ZyxelWanConnectedSensor(ZyxelMultyEntity, BinarySensorEntity):
         if isinstance(wan, dict):
             output = wan.get("output", wan)
             if isinstance(output, dict):
-                # The response may vary; check for common patterns
-                val = output.get("is-connected", output.get("result"))
+                val = output.get("status", output.get("is-connected"))
                 if isinstance(val, bool):
                     return val
                 if isinstance(val, str):

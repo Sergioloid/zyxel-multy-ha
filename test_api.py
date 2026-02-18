@@ -32,7 +32,8 @@ def build_rpc(operation, namespace, root, data=None):
     params = {}
     if operation == "get-config":
         params["source"] = "running"
-        params["filter"] = [{"xmlns": namespace, "root": root, "type": "subtree"}]
+        # IMPORTANT: include root key as empty dict, or router returns 5156
+        params["filter"] = [{"xmlns": namespace, "root": root, "type": "subtree", root: {}}]
     else:
         params["xmlns"] = namespace
         params["root"] = root
@@ -55,16 +56,10 @@ async def main():
 
         async with session.post(BASE_URL, json=auth_payload,
             headers={"Content-Type": "application/json;charset=UTF-8"}) as resp:
-            # Get sysauth from Set-Cookie
             sysauth = None
-            for cookie in resp.cookies.values():
-                if cookie.key == "sysauth" and cookie.value:
-                    sysauth = cookie.value
-            # Also check raw headers
-            if not sysauth:
-                sc = resp.headers.get("Set-Cookie", "")
-                if "sysauth=" in sc:
-                    sysauth = sc.split("sysauth=")[1].split(";")[0]
+            sc = resp.headers.get("Set-Cookie", "")
+            if "sysauth=" in sc:
+                sysauth = sc.split("sysauth=")[1].split(";")[0].strip()
 
             data = await resp.json(content_type=None)
             token = data["rpc-reply"]["data"][0]["authentication"]["output"]["token"]
@@ -102,46 +97,43 @@ async def main():
             except Exception as e:
                 print(f"  EXCEPTION: {e}")
 
-        # === TEST ALL ENDPOINTS ===
-        await do_request("2. DEVICE STATISTICS",
+        # === RPC ENDPOINTS ===
+        await do_request("2. DEVICE STATISTICS (rpc)",
             build_rpc("rpc", NS_NETWORK_DEVICE, "get-device-statistics"))
 
-        await do_request("3. CURRENT BANDWIDTH",
+        await do_request("3. CURRENT BANDWIDTH (rpc)",
             build_rpc("rpc", NS_SYSTEM, "current-band-width"))
 
-        await do_request("4. CURRENT PORT STATE",
+        await do_request("4. CURRENT PORT STATE (rpc)",
             build_rpc("rpc", NS_SYSTEM, "current-port-state"))
 
-        await do_request("5. WAN CONNECTED",
+        await do_request("5. WAN CONNECTED (rpc)",
             build_rpc("rpc", NS_EASY123, "is-wan-port-connected"))
 
-        await do_request("6. INTERNET STATUS",
+        await do_request("6. INTERNET STATUS (rpc)",
             build_rpc("rpc", NS_EASY123, "access-internet-status"))
 
-        await do_request("7. SPEED TEST RESULT",
+        await do_request("7. SPEED TEST RESULT (rpc)",
             build_rpc("rpc", NS_SPEED_TEST, "test-result"))
 
-        await do_request("8. NETWORK DEVICES (get-config)",
-            build_rpc("get-config", NS_NETWORK_DEVICE, "network-devices"))
-
-        await do_request("9. BASIC SYSTEM INFO",
-            build_rpc("rpc", NS_SYSTEM, "basic-system-info"))
-
-        await do_request("10. SYSTEM STATE",
-            build_rpc("rpc", NS_SYSTEM, "system-state"))
-
-        await do_request("11. MESH DEVICES STATE",
-            build_rpc("rpc", NS_WIFI_SYSTEM, "system-devices-state"))
-
-        await do_request("12. API VERSION",
+        await do_request("8. API VERSION (rpc)",
             build_rpc("rpc", NS_SYSTEM, "api-version"))
 
-        await do_request("13. FIRMWARE CHECK",
+        await do_request("9. FIRMWARE CHECK (rpc)",
             build_rpc("rpc", NS_FIRMWARE, "on-line-check"))
 
-        await do_request("14. WIFI CONFIG",
-            build_rpc("rpc", NS_EASY123, "get-wifi-configuration",
-                {"input": {"network": "main"}}))
+        # === GET-CONFIG ENDPOINTS (require root key in filter) ===
+        await do_request("10. BASIC SYSTEM INFO (get-config)",
+            build_rpc("get-config", NS_SYSTEM, "basic-system-info"))
+
+        await do_request("11. SYSTEM STATE (get-config)",
+            build_rpc("get-config", NS_SYSTEM, "system-state"))
+
+        await do_request("12. MESH DEVICES STATE (get-config)",
+            build_rpc("get-config", NS_WIFI_SYSTEM, "system-devices-state"))
+
+        await do_request("13. NETWORK DEVICES (get-config)",
+            build_rpc("get-config", NS_NETWORK_DEVICE, "network-devices"))
 
     print("\n\nDONE!")
 
