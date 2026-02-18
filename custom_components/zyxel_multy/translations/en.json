@@ -3,17 +3,17 @@
     "step": {
       "user": {
         "title": "Connect to Zyxel Multy Router",
-        "description": "Enter the connection details for your Zyxel Multy router.",
+        "description": "Enter the local admin credentials for your Zyxel Multy router. The username is usually 'admin'. The password is the one you set in the router's web GUI (not your Google/cloud account).",
         "data": {
           "host": "Router IP Address",
           "username": "Username",
-          "password": "Password"
+          "password": "Router Admin Password"
         }
       }
     },
     "error": {
-      "cannot_connect": "Unable to connect to the router. Check the IP address.",
-      "invalid_auth": "Invalid username or password.",
+      "cannot_connect": "Unable to connect to the router. Check the IP address and make sure Home Assistant can reach it.",
+      "invalid_auth": "Authentication failed. Check the admin password (this is the local router password, not your Google/cloud account).",
       "unknown": "An unexpected error occurred."
     },
     "abort": {

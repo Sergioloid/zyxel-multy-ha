@@ -36,8 +36,14 @@ class ZyxelMultyConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            host = user_input[CONF_HOST]
+
+            # Prevent duplicate entries for same host
+            await self.async_set_unique_id(host)
+            self._abort_if_unique_id_configured()
+
             api = ZyxelMultyApi(
-                host=user_input[CONF_HOST],
+                host=host,
                 username=user_input[CONF_USERNAME],
                 password=user_input[CONF_PASSWORD],
             )
@@ -47,20 +53,18 @@ class ZyxelMultyConfigFlow(ConfigFlow, domain=DOMAIN):
                 info = await api.get_system_info()
                 model_name = "Zyxel Multy"
                 if isinstance(info, dict):
-                    model_name = info.get("model-name", "Zyxel Multy")
+                    model_name = info.get("model-name", model_name)
             except ZapiAuthError:
                 errors["base"] = "invalid_auth"
-            except ZapiError:
+            except ZapiError as err:
+                _LOGGER.debug("Connection error during config flow: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:
-                _LOGGER.exception("Unexpected exception")
+                _LOGGER.exception("Unexpected exception during config flow")
                 errors["base"] = "unknown"
             else:
-                await self._async_abort_if_unique_id_configured()
-                await api.close()
-
                 return self.async_create_entry(
-                    title=f"{model_name} ({user_input[CONF_HOST]})",
+                    title=f"{model_name} ({host})",
                     data=user_input,
                 )
             finally:
