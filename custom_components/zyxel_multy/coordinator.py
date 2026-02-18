@@ -25,7 +25,6 @@ class ZyxelMultyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         username: str,
         password: str,
     ) -> None:
-        """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
@@ -36,16 +35,11 @@ class ZyxelMultyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._host = host
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from the router."""
         try:
-            # Fetch all data in parallel-ish fashion
-            system_info = await self.api.get_system_info()
-            devices = await self.api.get_network_devices()
+            # These endpoints work reliably with admin user
             device_stats = await self.api.get_device_statistics()
-            mesh_state = await self.api.get_mesh_devices_state()
             bandwidth = await self.api.get_current_bandwidth()
 
-            # Try to get WAN status (may fail on some models)
             wan_connected = {}
             try:
                 wan_connected = await self.api.is_wan_connected()
@@ -58,14 +52,32 @@ class ZyxelMultyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except ZapiError:
                 _LOGGER.debug("Could not fetch internet status")
 
-            # Try speed test result (non-blocking, may be empty)
             speed_test = {}
             try:
                 speed_test = await self.api.get_speed_test_result()
             except ZapiError:
                 pass
 
-            # Try firmware check
+            # These may fail with 2002 (access denied) on some user levels
+            system_info = {}
+            try:
+                system_info = await self.api.get_system_info()
+            except ZapiError:
+                _LOGGER.debug("Could not fetch system info (may need elevated permissions)")
+
+            mesh_state = {}
+            try:
+                mesh_state = await self.api.get_mesh_devices_state()
+            except ZapiError:
+                _LOGGER.debug("Could not fetch mesh state (may need elevated permissions)")
+
+            # get-config for network devices may not work on all firmwares
+            devices: list[dict[str, Any]] = []
+            try:
+                devices = await self.api.get_network_devices()
+            except ZapiError:
+                _LOGGER.debug("Could not fetch network devices list")
+
             firmware = {}
             try:
                 firmware = await self.api.firmware_check()

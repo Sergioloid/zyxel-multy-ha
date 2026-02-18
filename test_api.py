@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""Test script to probe the real Zyxel Multy ZAPI and see response formats.
-
-Run this from a machine on the same network as the router:
-  python3 test_api.py
-
-This matches the corrected ZAPI protocol format (reverse-engineered from the app).
-"""
+"""Test script for Zyxel Multy ZAPI - corrected protocol."""
 
 import asyncio
 import json
 import ssl
 import time
-
 import aiohttp
 
 HOST = "192.168.212.1"
@@ -28,276 +21,129 @@ NS_SPEED_TEST = "urn:zyxel:cpe:system:zyxel-system-speed-test"
 NS_WIFI_SYSTEM = "urn:zyxel:cpe:system:zyxel-system-wifi-system"
 NS_FIRMWARE = "urn:zyxel:cpe:system:zyxel-system-firmware-upgrade"
 
+msg_id = 0
 
-def build_rpc(operation, namespace, root, data=None, source="running"):
-    """Build a ZAPI RPC request envelope.
+def next_id():
+    global msg_id
+    msg_id += 1
+    return msg_id
 
-    For 'rpc' operations: data goes under params.<root>
-    For 'get-config': filter array in params
-    For 'edit-config': config array in params
-    """
+def build_rpc(operation, namespace, root, data=None):
     params = {}
     if operation == "get-config":
-        params["source"] = source
+        params["source"] = "running"
         params["filter"] = [{"xmlns": namespace, "root": root, "type": "subtree"}]
-    elif operation == "edit-config":
-        params["target"] = "running"
-        params["error-option"] = "stop-on-error"
-        config_element = {"xmlns": namespace, "root": root}
-        if data:
-            config_element[root] = data
-        params["config"] = [config_element]
-    else:  # rpc
+    else:
         params["xmlns"] = namespace
         params["root"] = root
         params[root] = data or {}
-
-    return {
-        "rpc": {
-            "xmlns": XMLNS,
-            "message-id": int(time.time()),
-            "operation": operation,
-            "params": params,
-        }
-    }
-
-
-def extract_data(response, root=None):
-    """Extract data from rpc-reply response."""
-    try:
-        data_array = response["rpc-reply"]["data"]
-        if not data_array:
-            return {}
-        element = data_array[0]
-        if root and root in element:
-            return element[root]
-        # Try to find the data key
-        metadata_keys = {"xmlns", "type", "timestamp", "root", "not-modified"}
-        for key, value in element.items():
-            if key not in metadata_keys and isinstance(value, dict):
-                return value
-        return element
-    except (KeyError, IndexError, TypeError):
-        return response
+    return {"rpc": {"xmlns": XMLNS, "message-id": next_id(), "operation": operation, "params": params}}
 
 
 async def main():
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    conn = aiohttp.TCPConnector(ssl=ssl_ctx)
 
-    connector = aiohttp.TCPConnector(ssl=ssl_context)
-    async with aiohttp.ClientSession(connector=connector) as session:
-
-        # === 1. AUTHENTICATE ===
+    async with aiohttp.ClientSession(connector=conn) as session:
+        # === AUTH ===
         print("=" * 60)
         print("1. AUTHENTICATE")
-        print("=" * 60)
-        auth_payload = build_rpc(
-            "rpc",
-            NS_AUTH,
-            "authentication",
-            data={
-                "user-authentication-order": ["local"],
-                "user": [{"name": USERNAME, "password": PASSWORD}],
-            },
-        )
-        print(f"REQUEST:\n{json.dumps(auth_payload, indent=2)}\n")
+        auth_payload = build_rpc("rpc", NS_AUTH, "authentication",
+            {"input": {"name": USERNAME, "password": PASSWORD}})
 
-        async with session.post(
-            BASE_URL,
-            json=auth_payload,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            print(f"STATUS: {resp.status}")
-            auth_text = await resp.text()
-            print(f"RESPONSE:\n{auth_text}\n")
+        async with session.post(BASE_URL, json=auth_payload,
+            headers={"Content-Type": "application/json;charset=UTF-8"}) as resp:
+            # Get sysauth from Set-Cookie
+            sysauth = None
+            for cookie in resp.cookies.values():
+                if cookie.key == "sysauth" and cookie.value:
+                    sysauth = cookie.value
+            # Also check raw headers
+            if not sysauth:
+                sc = resp.headers.get("Set-Cookie", "")
+                if "sysauth=" in sc:
+                    sysauth = sc.split("sysauth=")[1].split(";")[0]
 
+            data = await resp.json(content_type=None)
+            token = data["rpc-reply"]["data"][0]["authentication"]["output"]["token"]
+            print(f"  TOKEN: {token}")
+            print(f"  SYSAUTH: {sysauth}")
+
+        # Common headers for all subsequent requests
+        headers = {
+            "Content-Type": "application/json;charset=UTF-8",
+            "ZAPI_TOKEN": token,
+        }
+        cookies = {"sysauth": sysauth} if sysauth else {}
+
+        async def do_request(name, payload):
+            print(f"\n{'=' * 60}")
+            print(f"{name}")
             try:
-                auth_result = json.loads(auth_text)
-            except json.JSONDecodeError:
-                print("FAILED TO PARSE JSON")
-                return
+                async with session.post(BASE_URL, json=payload,
+                    headers=headers, cookies=cookies,
+                    timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    text = await resp.text()
+                    try:
+                        result = json.loads(text)
+                        reply = result.get("rpc-reply", {})
+                        if reply.get("result") == "ok":
+                            d = reply.get("data", [{}])[0]
+                            # Remove metadata keys for cleaner display
+                            display = {k: v for k, v in d.items() if k not in ("xmlns", "root", "type", "timestamp")}
+                            print(f"  OK: {json.dumps(display, indent=4, ensure_ascii=False)[:2000]}")
+                        else:
+                            err = reply.get("rpc-error", {}).get("error-message", {}).get("text", "?")
+                            print(f"  ERROR {err}: {json.dumps(reply, indent=2)[:500]}")
+                    except json.JSONDecodeError:
+                        print(f"  NON-JSON: {text[:500]}")
+            except Exception as e:
+                print(f"  EXCEPTION: {e}")
 
-        # Extract token from rpc-reply.data[0].authentication.output.token
-        token = None
-        for path_desc, extract_fn in [
-            ("rpc-reply.data[0].authentication.output.token",
-             lambda r: r["rpc-reply"]["data"][0]["authentication"]["output"]["token"]),
-            ("rpc-reply.data[0].output.token",
-             lambda r: r["rpc-reply"]["data"][0]["output"]["token"]),
-        ]:
-            try:
-                token = extract_fn(auth_result)
-                print(f"TOKEN FOUND at path: {path_desc}")
-                print(f"TOKEN: {token[:30]}..." if len(str(token)) > 30 else f"TOKEN: {token}")
-                break
-            except (KeyError, IndexError, TypeError):
-                continue
+        # === TEST ALL ENDPOINTS ===
+        await do_request("2. DEVICE STATISTICS",
+            build_rpc("rpc", NS_NETWORK_DEVICE, "get-device-statistics"))
 
-        if not token:
-            print("COULD NOT FIND TOKEN!")
-            print("Full response structure:")
-            print(json.dumps(auth_result, indent=2))
-            return
+        await do_request("3. CURRENT BANDWIDTH",
+            build_rpc("rpc", NS_SYSTEM, "current-band-width"))
 
-        cookies = {"token": token}
+        await do_request("4. CURRENT PORT STATE",
+            build_rpc("rpc", NS_SYSTEM, "current-port-state"))
 
-        # === 2. SYSTEM INFO ===
-        print("\n" + "=" * 60)
-        print("2. GET SYSTEM INFO")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_SYSTEM, "basic-system-info")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "basic-system-info")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)}\n")
+        await do_request("5. WAN CONNECTED",
+            build_rpc("rpc", NS_EASY123, "is-wan-port-connected"))
 
-        # === 3. DEVICE STATISTICS ===
-        print("\n" + "=" * 60)
-        print("3. GET DEVICE STATISTICS")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_NETWORK_DEVICE, "get-device-statistics")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "get-device-statistics")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)}\n")
+        await do_request("6. INTERNET STATUS",
+            build_rpc("rpc", NS_EASY123, "access-internet-status"))
 
-        # === 4. NETWORK DEVICES ===
-        print("\n" + "=" * 60)
-        print("4. GET NETWORK DEVICES (get-config)")
-        print("=" * 60)
-        payload = build_rpc("get-config", NS_NETWORK_DEVICE, "network-devices")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "network-devices")
-            if isinstance(data, dict):
-                devices = data.get("device", [])
-                print(f"STATUS: {resp.status}")
-                print(f"Number of devices: {len(devices)}")
-                for d in devices[:3]:
-                    print(f"  Device: {json.dumps(d, indent=4)}")
-                if len(devices) > 3:
-                    print(f"  ... and {len(devices) - 3} more")
-            else:
-                print(f"Unexpected data format: {str(data)[:500]}")
+        await do_request("7. SPEED TEST RESULT",
+            build_rpc("rpc", NS_SPEED_TEST, "test-result"))
 
-        # === 5. MESH DEVICES STATE ===
-        print("\n" + "=" * 60)
-        print("5. GET MESH DEVICES STATE")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_WIFI_SYSTEM, "system-devices-state")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "system-devices-state")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)[:2000]}\n")
+        await do_request("8. NETWORK DEVICES (get-config)",
+            build_rpc("get-config", NS_NETWORK_DEVICE, "network-devices"))
 
-        # === 6. CURRENT BANDWIDTH ===
-        print("\n" + "=" * 60)
-        print("6. GET CURRENT BANDWIDTH")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_SYSTEM, "current-band-width")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "current-band-width")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)}\n")
+        await do_request("9. BASIC SYSTEM INFO",
+            build_rpc("rpc", NS_SYSTEM, "basic-system-info"))
 
-        # === 7. WAN CONNECTED ===
-        print("\n" + "=" * 60)
-        print("7. IS WAN PORT CONNECTED")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_EASY123, "is-wan-port-connected")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "is-wan-port-connected")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)}\n")
+        await do_request("10. SYSTEM STATE",
+            build_rpc("rpc", NS_SYSTEM, "system-state"))
 
-        # === 8. INTERNET STATUS ===
-        print("\n" + "=" * 60)
-        print("8. ACCESS INTERNET STATUS")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_EASY123, "access-internet-status")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "access-internet-status")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)}\n")
+        await do_request("11. MESH DEVICES STATE",
+            build_rpc("rpc", NS_WIFI_SYSTEM, "system-devices-state"))
 
-        # === 9. SPEED TEST RESULT ===
-        print("\n" + "=" * 60)
-        print("9. GET SPEED TEST RESULT")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_SPEED_TEST, "test-result")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "test-result")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)}\n")
+        await do_request("12. API VERSION",
+            build_rpc("rpc", NS_SYSTEM, "api-version"))
 
-        # === 10. FIRMWARE CHECK ===
-        print("\n" + "=" * 60)
-        print("10. FIRMWARE CHECK")
-        print("=" * 60)
-        payload = build_rpc("rpc", NS_FIRMWARE, "on-line-check")
-        async with session.post(
-            BASE_URL, json=payload, cookies=cookies,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            text = await resp.text()
-            result = json.loads(text)
-            data = extract_data(result, "on-line-check")
-            print(f"STATUS: {resp.status}")
-            print(f"EXTRACTED DATA:\n{json.dumps(data, indent=2)}\n")
+        await do_request("13. FIRMWARE CHECK",
+            build_rpc("rpc", NS_FIRMWARE, "on-line-check"))
+
+        await do_request("14. WIFI CONFIG",
+            build_rpc("rpc", NS_EASY123, "get-wifi-configuration",
+                {"input": {"network": "main"}}))
 
     print("\n\nDONE!")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
